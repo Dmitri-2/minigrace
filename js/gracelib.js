@@ -21,6 +21,15 @@ function getModuleName() {
     return moduleName;
 }
 
+function getFile(name){
+    return localStorage[name];
+}
+
+function setFile(name, data){
+    localStorage.setItem(name,data);
+}
+
+
 Array.prototype.sum = function () {
     return this.reduce(function(a,b) {return a+b;}, 0);
 };
@@ -2232,9 +2241,13 @@ function gracecode_io() {
     };
     this.methods['open(2)'] = function(argcv, path, mode) {
         path = callmethod(path, "asString", [0])._value;
-        if (typeof(process) !== "undefined") {
+        //Console Environment
+        if (typeof(process) !== "undefined")
+        {
             var m = mode._value;
             var o = Grace_allocObject(GraceObject, "fileStream");
+
+            //Setup File
             try {
                 var f = fs.openSync(path, m);
             } catch(e) {
@@ -2246,6 +2259,8 @@ function gracecode_io() {
                 var a = c.toString().split('\n');
             }
             var i = 0;
+
+            //Add Methods
             o.methods['write(1)'] = function (argvc, data) { fs.writeSync(f, safeJsString(data)); };
             o.methods['close'] = function () { fs.closeSync(f); };
             o.methods['getline'] = function () { var s = a[i]; i++; return new GraceString(s); };
@@ -2256,36 +2271,112 @@ function gracecode_io() {
                   return (this===other) ? GraceTrue : GraceFalse; };
             return o;
         }
-        var o2 = Grace_allocObject(GraceObject, "fileStream");
-        o2.methods['write'] = function io_write () {};
-        o2.methods['close'] = function io_close () {};
-        var slash = path.lastIndexOf("/");
-        if (slash >= 0) path = path.substring(slash+1);
-        if (path.substr(path.length - 4) === ".gct") {
-            var gctpath = path.substr(0, path.length - 4);
-            if (mode._value === "w")
-                gctCache[gctpath] = "";
-            else if (mode._value === "r") {
-                if (typeof gctCache[gctpath] === "undefined")
-                    throw new GraceExceptionPacket(EnvironmentExceptionObject,
-                           new GraceString("can't open file '" + gctpath +
-                                           ".gct' for 'r'.  File does not exist."));
-                else {
-                    o2._lines = gctCache[gctpath].split("\n");
-                    o2._index = 0;
+        //We are in the Web IDE
+        else
+        {
+            //Allocate fstream object, setup variables
+            var o2 = Grace_allocObject(GraceObject, "fileStream");
+            var file_mode = mode._value;
+            var filename = "file:"+path;
+            var lastPeriod = filename.lastIndexOf(".");
+            var file_extension = filename.substring(lastPeriod);
+            var textExtensions = [".grace", ".txt", ".json", ".xml", ".js", ".html", ".xhtml"];
+            var contents, parsed_contents, i, write_allowed;
+
+            //Default Methods
+            o2.methods['write'] = function io_write () {};
+            o2.methods['close'] = function io_close () {};
+
+            //Determine File Mode
+            file_mode = file_mode.toLowerCase();
+            if(file_mode === "rw" || file_mode === "wr" || file_mode === "w") {write_allowed = true;}
+
+            //If in web environment and dealing with a text-based file
+            if(textExtensions.includes(file_extension)) {
+
+                //Get and parse file
+                contents = getFile(filename);
+                if (contents === undefined) {
+                    parsed_contents = [""];
+                } else {
+                    parsed_contents = contents.toString().split('\n');
+                    i=0;
                 }
+
+                //Write (overwrite) Method
+                o2.methods['write(1)'] = function (argcv, data) {
+                    if(write_allowed){
+                        //Update localStorage and local values
+                        setFile(filename,data._value);
+                        contents = data._value;
+                        parsed_contents = contents.toString().split('\n');
+                    }
+                };
+
+                //Append Method
+                o2.methods['append(1)'] = function (argcv, data) {
+                    if(write_allowed){
+                        var new_data = contents+data._value;
+
+                        //Update localStorage and local values
+                        setFile(filename,(new_data));
+                        contents = new_data;
+                        parsed_contents = contents.toString().split('\n');
+                    }
+                };
+
+                //Get Next Line Method
+                o2.methods['getline'] = function () {
+                    //Get line from contents and incriment
+                    var s = parsed_contents[i]; i++;
+
+                    //Check for errors - if found, throw exception
+                    if(i > parsed_contents.length) {throw new GraceExceptionPacket(EnvironmentExceptionObject,
+                        new GraceString("\n\nError Reading File: "+path+" \nReason: End of File\nCall Failure: FileStream.getline\n\n"));}
+                    if(s === undefined) {throw new GraceExceptionPacket(EnvironmentExceptionObject,
+                        new GraceString("\n\nError Reading File: "+path+"\n\n"));}
+
+                    //Return line of file as a string
+                    return new GraceString(s.toString());
+                };
+
+                //Other Methods
+                o2.methods['write'] = function io_write () { if(write_allowed){ setFile(filename,contents);} };
+                o2.methods['close'] = function () { return Grace_allocObject(GraceObject, "fileStream"); };
+                o2.methods['eof'] = function () { return (i === parsed_contents.length) ? GraceTrue : GraceFalse; };
+                o2.methods['read'] = function () { return new GraceString(contents.toString()); };
+                o2.methods['pathname'] = function () { return new GraceString(path); };
+                o2.methods['==(1)'] = function (argcv, other) { return (this===other) ? GraceTrue : GraceFalse; };
             }
-            o2.methods['write(1)'] = function io_gct_write (argcv, s) {
-                gctCache[gctpath] += s._value;
-            };
-            o2.methods['getline'] = function io_gct_getline (argcv) {
-                return new GraceString(this._lines[this._index++]);
-            };
-            o2.methods['eof'] = function io_gct_eof  () {
-                return ((this._index >= this._lines.length) ? GraceTrue : GraceFalse);
-            };
+
+            //.gct File Methods 
+            if (path.substr(path.length - 4) === ".gct") {
+                var gctpath = path.substr(0, path.length - 4);
+                if (mode._value === "w")
+                    gctCache[gctpath] = "";
+                else if (mode._value === "r") {
+                    if (typeof gctCache[gctpath] === "undefined")
+                        throw new GraceExceptionPacket(EnvironmentExceptionObject,
+                            new GraceString("can't open file '" + gctpath +
+                                ".gct' for 'r'.  File does not exist."));
+                    else {
+                        o2._lines = gctCache[gctpath].split("\n");
+                        o2._index = 0;
+                    }
+                }
+                o2.methods['write(1)'] = function io_gct_write (argcv, s) {
+                    gctCache[gctpath] += s._value;
+                };
+                o2.methods['getline'] = function io_gct_getline (argcv) {
+                    return new GraceString(this._lines[this._index++]);
+                };
+                o2.methods['eof'] = function io_gct_eof  () {
+                    return ((this._index >= this._lines.length) ? GraceTrue : GraceFalse);
+                };
+            } 
+
+            return o2;
         }
-        return o2;
     };
     this.methods['realpath(1)'] = function io_browser_realpath (argcv, x) {
         if(typeof(process) !== "undefined") {
@@ -2320,7 +2411,7 @@ function gracecode_sys() {
         if(typeof(process) !== "undefined") {
             var list = [];
             process.argv.forEach(function(val, index, array) {
-        if(index > 1)
+                if(index > 0)   // element 0 is /usr/local/bin/node, or similar
                     list.push(new GraceString(val));
             });
             return new GraceList(list);
@@ -3325,14 +3416,13 @@ function closeMatchesForMethodNamed(mName, obj) {
     // Returns a list of close matches to mName.
     var matches = [];
     var gName = new GraceString(mName);
-    var one = new GraceNum(1);
     for (var candidate in obj.methods) {
         if (obj.methods.hasOwnProperty(candidate)) {
             var gCand = new GraceString(candidate);
             var mm = do_import("mirrors", gracecode_mirrors);
             var em = request(mm, "loadDynamicModule(1)", [1], new GraceString("errormessages"));
-            if (request(em, "name(1)matches(1)within(1)", [1, 1, 1],
-                                     gCand, gName, one)._value !== 0) {
+            if (Grace_isTrue(request(em, "name(1)mightBeIntendedToBe(1)",
+                    [1, 1], gCand, gName))) {
                 matches.push(canonicalMethodName(gCand._value));
             }
         }
